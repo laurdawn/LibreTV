@@ -254,8 +254,8 @@ export function PlayerShell({
   };
 
   /**
-   * Safari 原生 HLS。一律换成带票据的本站代理地址：Apple TV 不带 cookie，
-   * 直链和防盗链源都走同一条能投的 URL。
+   * Safari 原生 HLS。先播直链（服务器 IP 常被片源 CDN 拒绝，不能一上来就走代理）。
+   * 直连失败再换带票据的本站代理，Apple TV 不带 cookie 也能拉这条代理。
    */
   const setupNativeHls = (video: HTMLVideoElement, mediaUrl: string, _allowProxyFallback: boolean) => {
     hlsRef.current?.destroy();
@@ -284,8 +284,33 @@ export function PlayerShell({
       }
       video.play().catch(() => {});
     };
+    let triedProxy = false;
     const onError = () => {
       if (token !== nativePlayTokenRef.current) return;
+      const current = video.currentSrc || video.src || '';
+      if (!triedProxy && !current.includes('/api/proxy')) {
+        triedProxy = true;
+        void (async () => {
+          let playUrl = '';
+          try {
+            const res = await fetch(`/api/playback-url?url=${encodeURIComponent(mediaUrl)}`, { credentials: 'include' });
+            if (res.ok) {
+              const data = await res.json() as { url?: string };
+              playUrl = data.url || '';
+            }
+          } catch { /* 票据失败则按加载失败处理 */ }
+          if (token !== nativePlayTokenRef.current) return;
+          if (!playUrl) {
+            if (!playbackStartedRef.current) setError('视频加载失败，请尝试其他视频源');
+            return;
+          }
+          showHint('直连失败，改用代理重试...');
+          currentMediaUrlRef.current = playUrl;
+          video.src = playUrl;
+          video.load();
+        })();
+        return;
+      }
       video.removeEventListener('error', onError);
       video.removeEventListener('loadedmetadata', onMeta);
       if (!playbackStartedRef.current) {
@@ -294,21 +319,8 @@ export function PlayerShell({
     };
     video.addEventListener('loadedmetadata', onMeta);
     video.addEventListener('error', onError);
-
-    void (async () => {
-      let playUrl = mediaUrl;
-      try {
-        const res = await fetch(`/api/playback-url?url=${encodeURIComponent(mediaUrl)}`, { credentials: 'include' });
-        if (res.ok) {
-          const data = await res.json() as { url?: string };
-          if (data.url) playUrl = data.url;
-        }
-      } catch { /* 票据失败时退回原地址 */ }
-      if (token !== nativePlayTokenRef.current) return;
-      currentMediaUrlRef.current = playUrl;
-      video.src = playUrl;
-      video.load();
-    })();
+    video.src = mediaUrl;
+    video.load();
   };
 
   /** 换集：重置每集状态并切换到新 HLS 源（不重建 ArtPlayer）。 */
