@@ -17,8 +17,10 @@ export async function GET(req: Request) {
 
   const live = current.searchParams.get('live') === '1';
   const path = live ? '/api/live/stream' : '/api/proxy';
-  const play = new URL(path, current.origin);
-  play.searchParams.set('url', target);
-  play.searchParams.set('pt', signPlayback(target));
-  return NextResponse.json({ url: play.href });
+  // 返回站内相对地址。容器里 req.url 的 origin 是 0.0.0.0:8080，
+  // 拼成绝对地址后浏览器和 Apple TV 都无法打开。
+  const params = new URLSearchParams();
+  params.set('url', target);
+  params.set('pt', signPlayback(target));
+  return NextResponse.json({ url: `${path}?${params.toString()}` });
 }
