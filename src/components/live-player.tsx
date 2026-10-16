@@ -122,6 +122,7 @@ export function LivePlayer({ url, title, onPrevChannel, onNextChannel }: LivePla
       failMessage?: string
     ) => {
       cleanupEngines();
+      video.setAttribute('x-webkit-airplay', 'allow');
       const onError = () => {
         video.removeEventListener('error', onError);
         nativeCleanup = null;
@@ -317,6 +318,11 @@ export function LivePlayer({ url, title, onPrevChannel, onNextChannel }: LivePla
       moreVideoAttr: { playsInline: true },
       customType: {
         m3u8: (video: HTMLVideoElement) => {
+          // Safari 原生 HLS 才能在网页里隔空播放；其它浏览器继续用 hls.js
+          if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            setupNative(video, url, true);
+            return;
+          }
           setupHls(video, url, 'direct');
         },
         flv: (video: HTMLVideoElement) => {
