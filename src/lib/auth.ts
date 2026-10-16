@@ -36,6 +36,33 @@ export function signSession(): { token: string; expiresAt: number } {
   return { token: `${payload}.${hmac(payload)}`, expiresAt };
 }
 
+const PLAYBACK_TTL_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * 播放地址票据：绑在具体上游 URL 上，Apple TV 隔空播放时没有浏览器 cookie，
+ * 靠查询参数 pt 访问本站代理。泄漏一张票据也只能在有效期内拉这一条地址。
+ */
+export function signPlayback(targetUrl: string, now = Date.now()): string {
+  const expiresAt = now + PLAYBACK_TTL_MS;
+  const payload = `${expiresAt}\n${targetUrl}`;
+  return `${expiresAt}.${hmac(payload)}`;
+}
+
+export function verifyPlayback(targetUrl: string, token: string | undefined | null, now = Date.now()): boolean {
+  if (!token || !targetUrl) return false;
+  const dot = token.indexOf('.');
+  if (dot <= 0) return false;
+  const expStr = token.slice(0, dot);
+  const sig = token.slice(dot + 1);
+  const expiresAt = parseInt(expStr, 10);
+  if (!Number.isFinite(expiresAt) || now >= expiresAt) return false;
+  const expected = hmac(`${expiresAt}\n${targetUrl}`);
+  const a = Buffer.from(sig);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return false;
+  return true;
+}
+
 /** 校验会话 token 的签名与有效期 */
 export function verifySession(token: string | undefined | null): boolean {
   if (!token) return false;

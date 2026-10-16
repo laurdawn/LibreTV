@@ -36,25 +36,32 @@ export function makeAbsolute(url: string, base: string | undefined): string {
 }
 
 /** 将 m3u8 中的地址改写为经过本站代理的地址（分片/key/map 同样改写）。
- *  prefix 可指定代理地址基座（直播流走 /api/live/stream?url=，点播默认 /api/proxy?url=） */
+ *  prefix 可指定代理地址基座（直播流走 /api/live/stream?url=，点播默认 /api/proxy?url=）。
+ *  sign 存在时为每条上游地址附带播放票据，供没有 cookie 的隔空播放设备拉取。 */
 export function rewriteM3u8(
   content: string,
   baseUrl: string,
   depth = 0,
-  prefix: string = PROXY_BASE
+  prefix: string = PROXY_BASE,
+  sign?: (absoluteUrl: string) => string
 ): string {
   if (depth > 5) return content;
+  const proxied = (uri: string) => {
+    const absolute = makeAbsolute(uri, baseUrl);
+    const url = prefix + encodeURIComponent(absolute);
+    return sign ? `${url}&pt=${encodeURIComponent(sign(absolute))}` : url;
+  };
   const lines = content.split('\n');
   const out = lines.map((line) => {
     if (line.startsWith('#EXT-X-KEY') || line.startsWith('#EXT-X-MAP')) {
       return line.replace(/(URI=")([^"]+)(")/g, (m, p1: string, uri: string, p2: string) => {
         if (isProxiedUri(uri)) return m;
-        return p1 + prefix + encodeURIComponent(makeAbsolute(uri, baseUrl)) + p2;
+        return p1 + proxied(uri) + p2;
       });
     }
     if (line.startsWith('#') || line.trim() === '') return line;
     if (isProxiedUri(line)) return line;
-    return prefix + encodeURIComponent(makeAbsolute(line, baseUrl));
+    return proxied(line.trim());
   });
   return out.join('\n');
 }

@@ -320,7 +320,18 @@ export function LivePlayer({ url, title, onPrevChannel, onNextChannel }: LivePla
         m3u8: (video: HTMLVideoElement) => {
           // Safari 原生 HLS 才能在网页里隔空播放；其它浏览器继续用 hls.js
           if (video.canPlayType('application/vnd.apple.mpegurl')) {
-            setupNative(video, url, true);
+            void (async () => {
+              let playUrl = url;
+              try {
+                const res = await fetch(`/api/playback-url?live=1&url=${encodeURIComponent(url)}`, { credentials: 'include' });
+                if (res.ok) {
+                  const data = await res.json() as { url?: string };
+                  if (data.url) playUrl = data.url;
+                }
+              } catch { /* 票据失败时退回原地址 */ }
+              if (disposed || destroyed) return;
+              setupNative(video, playUrl, !playUrl.includes('pt='));
+            })();
             return;
           }
           setupHls(video, url, 'direct');

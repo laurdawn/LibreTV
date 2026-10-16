@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
 import { guardRequest, jsonError } from '@/lib/api-guard';
+import { signPlayback, verifyPlayback } from '@/lib/auth';
 import { checkLiveUrlAllowed, isBlockedByDNS, isValidProxyUrl } from '@/lib/ssrf';
 import { fetchWithSafeRedirects } from '@/lib/fetch-utils';
-import { rewriteM3u8, LIVE_STREAM_BASE } from '@/lib/m3u8';
+import { rewriteM3u8, LIVE_STREAM_BASE, PROXY_BASE } from '@/lib/m3u8';
 
 /**
  * 代理目标地址的两种传入形式：
@@ -68,9 +69,19 @@ export function decodePathTarget(encodedUrl: string): string {
  * - 未登录仅放行图片目标（豆瓣封面等），且同样受 SSRF 防护约束；
  * - m3u8 文本重写为代理地址，分片/key/map 全部经本站转发，规避上游 CORS。
  */
+function playbackTicket(req: Request, targetUrl: string): string | null {
+  try {
+    const pt = new URL(req.url).searchParams.get('pt');
+    return pt && verifyPlayback(targetUrl, pt) ? pt : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function handleProxyRequest(req: Request, targetUrl: string): Promise<Response> {
+  const ticketOk = playbackTicket(req, targetUrl) !== null;
   const guarded = guardRequest(req);
-  if (guarded && !looksLikeImageUrl(targetUrl)) return guarded;
+  if (guarded && !ticketOk && !looksLikeImageUrl(targetUrl)) return guarded;
 
   if (!isValidProxyUrl(targetUrl)) {
     return new NextResponse('无效的 URL', { status: 400 });
@@ -121,7 +132,7 @@ export async function handleProxyRequest(req: Request, targetUrl: string): Promi
   // m3u8 文本：重写为代理地址（以重定向后的最终 URL 为 base 解析相对地址）
   if (isM3u8) {
     const text = await response.text();
-    return new NextResponse(rewriteM3u8(text, finalUrl), {
+    return new NextResponse(rewriteM3u8(text, finalUrl, 0, PROXY_BASE, ticketOk ? signPlayback : undefined), {
       status: response.status,
       headers: {
         'Content-Type': 'application/vnd.apple.mpegurl',
@@ -166,8 +177,9 @@ export async function handleProxyRequest(req: Request, targetUrl: string): Promi
  * - 部署者可设 LIVE_ALLOW_PRIVATE=1 显式放行内网自建源（默认拒绝）。
  */
 export async function handleLiveStreamRequest(req: Request, targetUrl: string): Promise<Response> {
+  const ticketOk = playbackTicket(req, targetUrl) !== null;
   const guarded = guardRequest(req);
-  if (guarded) return guarded;
+  if (guarded && !ticketOk) return guarded;
 
   const verdict = await checkLiveUrlAllowed(targetUrl);
   if (!verdict.ok) return jsonError(verdict.reason, 403);
@@ -219,7 +231,7 @@ export async function handleLiveStreamRequest(req: Request, targetUrl: string): 
   // 关键：以重定向后的最终 URL 为 base 解析相对地址（gslb 调度源 302 后路径会变）
   if (isM3u8) {
     const text = await response.text();
-    return new NextResponse(rewriteM3u8(text, finalUrl, 0, LIVE_STREAM_BASE), {
+    return new NextResponse(rewriteM3u8(text, finalUrl, 0, LIVE_STREAM_BASE, ticketOk ? signPlayback : undefined), {
       status: response.status,
       headers: {
         'Content-Type': 'application/vnd.apple.mpegurl',

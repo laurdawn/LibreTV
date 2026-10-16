@@ -165,7 +165,7 @@ export function PlayerShell({
    * Safari 直链走系统播放器（可隔空播放）；代理地址仍走 hls.js。
    */
   const setupHls = (video: HTMLVideoElement, mediaUrl: string, allowProxyFallback: boolean) => {
-    if (canPlayNativeHls(video) && !mediaUrl.startsWith('/api/proxy')) {
+    if (canPlayNativeHls(video)) {
       setupNativeHls(video, mediaUrl, allowProxyFallback);
       return;
     }
@@ -253,8 +253,11 @@ export function PlayerShell({
     });
   };
 
-  /** Safari 原生 HLS：video.src 指向直链，控制栏隔空播放由系统处理。失败再回到 hls.js 代理。 */
-  const setupNativeHls = (video: HTMLVideoElement, mediaUrl: string, allowProxyFallback: boolean) => {
+  /**
+   * Safari 原生 HLS。一律换成带票据的本站代理地址：Apple TV 不带 cookie，
+   * 直链和防盗链源都走同一条能投的 URL。
+   */
+  const setupNativeHls = (video: HTMLVideoElement, mediaUrl: string, _allowProxyFallback: boolean) => {
     hlsRef.current?.destroy();
     hlsRef.current = null;
     currentMediaUrlRef.current = mediaUrl;
@@ -285,19 +288,27 @@ export function PlayerShell({
       if (token !== nativePlayTokenRef.current) return;
       video.removeEventListener('error', onError);
       video.removeEventListener('loadedmetadata', onMeta);
-      if (allowProxyFallback && !mediaUrl.startsWith('/api/proxy')) {
-        showHint('直连失败，改用代理重试...');
-        setupHls(video, `/api/proxy?url=${encodeURIComponent(mediaUrl)}`, false);
-        return;
-      }
       if (!playbackStartedRef.current) {
         setError('视频加载失败，请尝试其他视频源');
       }
     };
     video.addEventListener('loadedmetadata', onMeta);
     video.addEventListener('error', onError);
-    video.src = mediaUrl;
-    video.load();
+
+    void (async () => {
+      let playUrl = mediaUrl;
+      try {
+        const res = await fetch(`/api/playback-url?url=${encodeURIComponent(mediaUrl)}`, { credentials: 'include' });
+        if (res.ok) {
+          const data = await res.json() as { url?: string };
+          if (data.url) playUrl = data.url;
+        }
+      } catch { /* 票据失败时退回原地址 */ }
+      if (token !== nativePlayTokenRef.current) return;
+      currentMediaUrlRef.current = playUrl;
+      video.src = playUrl;
+      video.load();
+    })();
   };
 
   /** 换集：重置每集状态并切换到新 HLS 源（不重建 ArtPlayer）。 */
@@ -381,7 +392,7 @@ export function PlayerShell({
     art.on('video:error', () => {
       mediaHealthyRef.current = false;
       // 原生 HLS 的失败由 setupNativeHls 决定是否改走代理，避免这里立刻退回 hls.js
-      if (canPlayNativeHls(art.video) && !currentMediaUrlRef.current.startsWith('/api/proxy')) return;
+      if (canPlayNativeHls(art.video)) return;
       // 起播阶段的 video 元素级错误（MSE/解码偶发失败）：重建一次播放链路自愈，
       // 而不是直接钉死错误遮罩——重建后视频轨重新 append，黑屏有声即可解除
       if (!playbackStartedRef.current && !videoErrorRetryUsedRef.current) {
